@@ -1,0 +1,99 @@
+# Per-node agent that performs the full host-side disconnect px-csi skips for FADA volumes,
+# closing the FlashArray LUN-recycle corruption window. Runs on the same nodes as Portworx.
+#
+# It needs privileged + hostPID (to nsenter into PID 1 and delete SCSI devices), so it lives in
+# its own namespace labeled for the privileged Pod Security Standard — keeping the shim's
+# restricted namespace untouched — with a ServiceAccount bound to the privileged SCC.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: px-fada-cleaner
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: px-fada-cleaner
+  namespace: px-fada-cleaner
+---
+# Grant the ServiceAccount use of the privileged SCC (OpenShift ships a ClusterRole per SCC).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: px-fada-cleaner-scc
+  namespace: px-fada-cleaner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: px-fada-cleaner
+    namespace: px-fada-cleaner
+---
+# Watch VolumeAttachments (cluster-scoped) for the ground-truth per-node detach signal.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: px-fada-cleaner-watch
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: px-fada-cleaner-watch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: px-fada-cleaner-watch
+subjects:
+  - kind: ServiceAccount
+    name: px-fada-cleaner
+    namespace: px-fada-cleaner
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: px-fada-cleaner
+  namespace: px-fada-cleaner
+  labels: { app: px-fada-cleaner }
+spec:
+  selector:
+    matchLabels: { app: px-fada-cleaner }
+  template:
+    metadata:
+      labels: { app: px-fada-cleaner }
+    spec:
+      serviceAccountName: px-fada-cleaner
+      # Only where Portworx (and thus FADA multipath devices) actually runs.
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      hostPID: true            # so nsenter -t 1 targets the host init's namespaces
+      hostNetwork: true
+      tolerations:
+        - operator: Exists     # run everywhere, incl. tainted infra/master if labeled worker
+      containers:
+        - name: cleaner
+          image: <dev-host-ip>:5000/px-fada-cleaner:v3
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true   # required for nsenter into PID 1 + sysfs device delete
+          env:
+            - name: NODE_NAME    # ground-truth detach signal is filtered to this node
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - { name: FADA_POLL_SECONDS, value: "8" }   # backstop poll interval
+            - { name: FADA_GRACE_POLLS,  value: "2" }   # poll-path hysteresis (watch bypasses)
+            - { name: FADA_VENDOR,       value: "PURE" }
+            - { name: FADA_DRY_RUN,      value: "false" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+      terminationGracePeriodSeconds: 5

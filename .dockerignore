@@ -1,0 +1,6 @@
+.git
+deploy
+*.md
+scratch
+Makefile
+scripts

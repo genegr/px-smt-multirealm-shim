@@ -1,0 +1,20 @@
+# Build output
+/px-smt-multirealm-shim
+/fada-cleaner
+/pxstress
+*.exe
+*.test
+*.out
+
+# Scratch / local working files
+scratch/
+/scratch
+
+# Local secrets (never commit real tokens or configs)
+config.json
+array-token
+*.local.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
