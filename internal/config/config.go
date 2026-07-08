@@ -54,6 +54,18 @@ type Config struct {
 	// pure logging pass-through. Default true.
 	RewriteEnabled bool
 
+	// ArrayIdentity turns on the per-FQDN synthetic array-identity rewrite (rewriting the array
+	// name+id in GET /arrays and everywhere it appears) so each realm FQDN looks like a distinct
+	// array and px does not de-duplicate multiple realms sharing one physical array. Default true.
+	//
+	// Disable (SHIM_ARRAY_IDENTITY=false) for a single-realm deployment: FADA DirectAccess
+	// resolves a volume's backend to the array's REAL id (derived from the device), so that real
+	// id must be present in px's endpoint map — but the synthetic id replaces it, and the attacher
+	// then fails with "backend ID … not present in NFS endpoints map". With one realm there is no
+	// realm-to-realm de-dup to prevent, so the synthetic identity only gets in the way. The FADA
+	// host/connection/grant rewrites are independent of this and stay on.
+	ArrayIdentity bool
+
 	// ArrayToken is the array-level admin API token the shim uses for rewritten calls that
 	// must address array-level hosts (which the realm-scoped px token cannot). Sourced from
 	// SHIM_ARRAY_TOKEN (mounted secret).
@@ -151,6 +163,7 @@ func FromEnv() (*Config, error) {
 		CertFile:         os.Getenv("SHIM_CERT_FILE"),
 		KeyFile:          os.Getenv("SHIM_KEY_FILE"),
 		RewriteEnabled:   envBool("SHIM_REWRITE", true),
+		ArrayIdentity:    envBool("SHIM_ARRAY_IDENTITY", true),
 		// Sanitize: a secret created with a stray newline/CR/tab (even in the middle) would make Go
 		// reject the "api-token" request header ("invalid header field value") on every array login.
 		// A FlashArray API token has no whitespace, so we strip every control/whitespace byte.

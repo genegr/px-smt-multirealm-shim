@@ -72,7 +72,12 @@ func NewRewriter(cfg *config.Config) *Rewriter {
 		}()
 	}
 	rw := &Rewriter{cfg: cfg, byNode: byNode, arr: arr}
-	rw.ident = &arrayIdentity{rw: rw}
+	// The per-FQDN synthetic array identity is optional: it prevents px de-duplicating multiple
+	// realms on one array, but it replaces the real array id px's FADA attacher needs to resolve a
+	// volume's backend. Left nil (SHIM_ARRAY_IDENTITY=false) for single-realm deployments.
+	if cfg.ArrayIdentity {
+		rw.ident = &arrayIdentity{rw: rw}
+	}
 	return rw
 }
 
@@ -93,8 +98,18 @@ func (rw *Rewriter) RewriteRequest(fqdn string, r *http.Request) {
 // the real array identity to this FQDN's synthetic one so px sees each realm as a distinct array.
 func (rw *Rewriter) ModifyResponse(fqdn string, resp *http.Response) {
 	rw.ModifyHostsResponse(resp)
-	if !rw.cfg.RewriteEnabled || rw.ident == nil || resp.Body == nil {
+	if !rw.cfg.RewriteEnabled || resp.Body == nil {
 		return
+	}
+	// Two independent body rewrites: the array-identity synth (real→synth, when enabled) and — for
+	// connection listings px filters by volume — mapping array-level host names back to px's realm
+	// host names. The latter is the connection-churn fix and must run even when array identity is
+	// off. connection() only maps host-filtered queries (where px supplied its own name); a
+	// volume-only GET /connections otherwise leaks the array host name and px churns the connection
+	// under a double-prefixed name (reassigning the LUN → read-only device → data loss).
+	isConnList := resp.Request != nil && resp.Request.Method == http.MethodGet && strings.HasSuffix(resp.Request.URL.Path, "/connections")
+	if rw.ident == nil && !isConnList {
+		return // nothing body-level to do
 	}
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
@@ -102,12 +117,11 @@ func (rw *Rewriter) ModifyResponse(fqdn string, resp *http.Response) {
 		resp.Body = io.NopCloser(strings.NewReader(""))
 		return
 	}
-	out := rw.ident.rewriteResponseBody(fqdn, body)
-	// Map array-level host names back to px's realm host names in connection listings px filters
-	// by volume. connection() only maps host-filtered queries (where px supplied its own name);
-	// a volume-only GET /connections otherwise leaks the array host name and px churns the
-	// connection under a double-prefixed name (reassigning the LUN → read-only device → data loss).
-	if resp.Request != nil && resp.Request.Method == http.MethodGet && strings.HasSuffix(resp.Request.URL.Path, "/connections") {
+	out := body
+	if rw.ident != nil {
+		out = rw.ident.rewriteResponseBody(fqdn, out)
+	}
+	if isConnList {
 		out = rw.mapConnHostsBack(out)
 	}
 	resp.Body = io.NopCloser(strings.NewReader(string(out)))

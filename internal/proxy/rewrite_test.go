@@ -198,6 +198,27 @@ func TestLearnAndMapConnHostsBack(t *testing.T) {
 	}
 }
 
+// With array identity disabled (SHIM_ARRAY_IDENTITY=false → ident nil), the connection-churn fix
+// must still map array-level host names back to px's realm host name in volume-filtered listings.
+func TestConnMapBackWithoutArrayIdentity(t *testing.T) {
+	rw := newTestRewriter() // ArrayIdentity unset → ident nil
+	if rw.ident != nil {
+		t.Fatal("expected nil array identity for this config")
+	}
+	rw.learnRealmHost("ocp4-1-realm1::worker1-uid")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Request:    httptest.NewRequest(http.MethodGet, "https://realm/api/2.2/connections?volume_names=v", nil),
+		Body:       io.NopCloser(strings.NewReader(`{"items":[{"host":{"name":"ocp4-1-worker1"},"volume":{"name":"v"}}]}`)),
+	}
+	rw.ModifyResponse("realm1-fa.demo.pure", resp)
+	out, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(out), `"ocp4-1-worker1"`) || !strings.Contains(string(out), "ocp4-1-realm1::worker1-uid") {
+		t.Errorf("array host name not mapped back with identity off: %s", out)
+	}
+}
+
 // The double-prefixed form px produces is the symptom, not px's real name — never learn it.
 func TestLearnIgnoresDoublePrefix(t *testing.T) {
 	rw := newTestRewriter()
