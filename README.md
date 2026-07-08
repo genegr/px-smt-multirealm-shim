@@ -36,12 +36,14 @@ upstream for the calls Portworx's realm-scoped token cannot make. All matching i
 
 ### What the rewrite does
 
-Portworx creates **realm hosts** and tries to give them a node's IQN — which fails because the
-IQN already belongs to the pre-provisioned **array-level host**. Keyed by a static node→array-host
-map, the shim:
+Portworx creates **realm hosts** and tries to give them a node's initiators — which fails because
+those initiators already belong to the pre-provisioned **array-level host**. Initiators span every
+supported transport: **iSCSI (IQNs), Fibre Channel (WWNs), and NVMe-TCP (NQNs)**. Keyed by a static
+node→array-host map, the shim:
 
-- Synthesizes a `200` for the `PATCH /hosts …add_iqns` that would otherwise `400`.
-- Injects the mapped IQN into realm-host items on `GET /hosts` so Portworx skips the failing patch.
+- Synthesizes a `200` for the `PATCH /hosts …add_iqns` / `…add_wwns` / `…add_nqns` that would
+  otherwise `400`.
+- Injects the mapped initiators into realm-host items on `GET /hosts` so Portworx skips the failing patch.
 - Synthesizes the double-prefixed host Portworx derives during FADA attach.
 - Rewrites `/connections` host names to the array-level host (issued with the array token) and
   **maps the array host name back** in every response — including the un-filtered
@@ -103,12 +105,17 @@ Manifests live in [`deploy/`](deploy/).
 
 1. **Shim** — [`deploy/px-shim.yaml`](deploy/px-shim.yaml): namespace `px-shim`, a Deployment, and
    a ClusterIP Service (443 → 9443). It reads a `px-shim-config` secret containing:
-   - `config.json` — the static node → array-host → IQN map:
+   - `config.json` — the static node → array-host → initiators map. Each host lists the initiator
+     identifiers it owns per transport as **comma-separated** `iqns` (iSCSI), `wwns` (FC), and/or
+     `nqns` (NVMe-TCP); set only the transports a node actually uses:
      ```json
      { "hosts": [
-       {"node":"worker0","arrayHost":"ocp4-1-worker0","iqn":"iqn.1994-05.com.redhat:<node-iqn>"}
+       {"node":"worker0","arrayHost":"ocp4-1-worker0","iqns":"iqn.1994-05.com.redhat:<node-iqn>"},
+       {"node":"worker1","arrayHost":"ocp4-1-worker1","wwns":"<wwn-a>,<wwn-b>"},
+       {"node":"worker2","arrayHost":"ocp4-1-worker2","nqns":"<node-nqn>"}
      ] }
      ```
+     The legacy singular `"iqn"` key is still accepted (folded into `iqns`) for older secrets.
    - `array-token` — the FlashArray **array-level admin** API token (for the rewritten connection
      calls the realm-scoped token cannot make).
 2. **DNS** — point each realm FQDN (`realm1-fa.demo.pure`, `realm2-fa.demo.pure`, …) at the shim's

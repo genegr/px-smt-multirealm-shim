@@ -65,11 +65,60 @@ type Config struct {
 	Hosts []HostMapping
 }
 
-// HostMapping ties a Kubernetes node to its pre-provisioned array-level host + IQN.
+// HostMapping ties a Kubernetes node to its pre-provisioned array-level host and the initiator
+// identifiers that host owns, across all supported transports: iSCSI (IQNs), Fibre Channel
+// (WWNs), and NVMe-TCP (NQNs). Each field is a comma-separated list, so a host may carry several
+// identifiers per transport. A node typically uses one transport, but configuring more than one
+// is allowed. Empty transports are simply ignored.
 type HostMapping struct {
 	Node      string `json:"node"`      // e.g. "worker0" — the stable prefix px uses
 	ArrayHost string `json:"arrayHost"` // e.g. "ocp4-1-worker0" — the array-level host
-	IQN       string `json:"iqn"`       // the node's iSCSI IQN, owned by ArrayHost
+	IQNs      string `json:"iqns"`      // comma-separated iSCSI IQNs owned by ArrayHost
+	WWNs      string `json:"wwns"`      // comma-separated FC WWNs owned by ArrayHost
+	NQNs      string `json:"nqns"`      // comma-separated NVMe-TCP NQNs owned by ArrayHost
+
+	// LegacyIQN accepts the pre-multitransport single-IQN field ("iqn") and is folded into IQNs
+	// if the plural field is unset, so an older config secret keeps working. Deprecated.
+	LegacyIQN string `json:"iqn"`
+}
+
+// Initiator is one transport's identifiers as they appear on a FlashArray host object. Field is
+// the array's host key: "iqns" (iSCSI), "wwns" (FC), or "nqns" (NVMe-TCP).
+type Initiator struct {
+	Field string
+	Vals  []string
+}
+
+// Initiators returns the host's configured initiators grouped by transport, in a stable order
+// (iSCSI, FC, NVMe). Transports with no configured identifiers are omitted. The legacy singular
+// "iqn" is folded in when "iqns" is unset.
+func (h HostMapping) Initiators() []Initiator {
+	iqns := splitCSV(h.IQNs)
+	if len(iqns) == 0 {
+		iqns = splitCSV(h.LegacyIQN)
+	}
+	var out []Initiator
+	for _, in := range []Initiator{
+		{"iqns", iqns},
+		{"wwns", splitCSV(h.WWNs)},
+		{"nqns", splitCSV(h.NQNs)},
+	} {
+		if len(in.Vals) > 0 {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// splitCSV splits a comma-separated list, trimming whitespace and dropping empty entries.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // shimFile is the on-disk JSON shape of SHIM_CONFIG_FILE (the mounted secret).

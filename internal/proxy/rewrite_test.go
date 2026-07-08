@@ -1,17 +1,114 @@
 package proxy
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/genegr/px-smt-multirealm-shim/internal/config"
 )
 
+// newMultiTransportRewriter models a host reachable over FC and NVMe-TCP (no iSCSI), with a
+// comma-separated (and space-padded) WWN list to exercise CSV parsing.
+func newMultiTransportRewriter() *Rewriter {
+	return NewRewriter(&config.Config{
+		RewriteEnabled: true,
+		Hosts: []config.HostMapping{{
+			Node: "worker2", ArrayHost: "ocp4-1-worker2",
+			WWNs: "21000024ff00aaaa, 21000024ff00bbbb",
+			NQNs: "nqn.2014-08.org.nvmexpress:uuid:abc",
+		}},
+	})
+}
+
+func itemInitiators(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Items) != 1 {
+		t.Fatalf("unexpected body %s (err=%v)", body, err)
+	}
+	return payload.Items[0]
+}
+
+// A double-prefixed GET for an FC/NVMe host must synthesize a host carrying the configured WWNs
+// and NQNs (comma-separated, trimmed) and NOT an empty iqns field.
+func TestSynthesizesConfiguredTransports(t *testing.T) {
+	rw := newMultiTransportRewriter()
+	req := httptest.NewRequest(http.MethodGet, "https://realm/api/2.2/hosts?names=ocp4-1-realm1::ocp4-1-worker2", nil)
+	s := rw.getHostSynth(req)
+	if s == nil {
+		t.Fatal("expected a synthesized host for the double-prefixed name")
+	}
+	item := itemInitiators(t, s.body)
+	if _, ok := item["iqns"]; ok {
+		t.Errorf("iqns should be absent for an FC/NVMe-only host: %v", item)
+	}
+	wwns, _ := item["wwns"].([]any)
+	if len(wwns) != 2 || wwns[0] != "21000024ff00aaaa" || wwns[1] != "21000024ff00bbbb" {
+		t.Errorf("wwns not parsed/trimmed: %v", item["wwns"])
+	}
+	if nqns, _ := item["nqns"].([]any); len(nqns) != 1 {
+		t.Errorf("nqns: %v", item["nqns"])
+	}
+}
+
+// PATCH add_wwns / add_nqns on a realm host is faked with a 200 echoing the added transports;
+// a body with no add_* initiators passes through (nil).
+func TestPatchFakesAllTransports(t *testing.T) {
+	rw := newMultiTransportRewriter()
+	req := httptest.NewRequest(http.MethodPatch, "https://realm/api/2.2/hosts?names=ocp4-1-realm1::worker2-uid", nil)
+
+	s := rw.patchHostInitiators(req, []byte(`{"add_wwns":["21000024ff00cccc"],"add_nqns":["nqn.x"]}`))
+	if s == nil || s.status != http.StatusOK {
+		t.Fatalf("expected 200 synth, got %#v", s)
+	}
+	item := itemInitiators(t, s.body)
+	if w, _ := item["wwns"].([]any); len(w) != 1 || w[0] != "21000024ff00cccc" {
+		t.Errorf("wwns not echoed: %v", item["wwns"])
+	}
+	if _, ok := item["nqns"]; !ok {
+		t.Errorf("nqns not echoed: %v", item)
+	}
+
+	if s := rw.patchHostInitiators(req, []byte(`{"name_only":true}`)); s != nil {
+		t.Errorf("PATCH with no add_* initiators should pass through, got %#v", s)
+	}
+}
+
+// GET /hosts injection fills in every configured transport whose field is empty on the realm host.
+func TestInjectAllTransports(t *testing.T) {
+	rw := newMultiTransportRewriter()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Request:    httptest.NewRequest(http.MethodGet, "https://realm/api/2.2/hosts", nil),
+		Body:       io.NopCloser(strings.NewReader(`{"items":[{"name":"ocp4-1-realm1::worker2-uid","wwns":[],"nqns":[]}]}`)),
+	}
+	rw.ModifyHostsResponse(resp)
+	out, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(out), "21000024ff00aaaa") || !strings.Contains(string(out), "nqn.2014-08.org.nvmexpress:uuid:abc") {
+		t.Errorf("initiators not injected: %s", out)
+	}
+}
+
+// The legacy singular "iqn" field is still honored when "iqns" is unset.
+func TestLegacyIQNFallback(t *testing.T) {
+	got := config.HostMapping{LegacyIQN: "iqn.legacy:1"}.Initiators()
+	if len(got) != 1 || got[0].Field != "iqns" || got[0].Vals[0] != "iqn.legacy:1" {
+		t.Errorf("legacy iqn not folded into iqns: %#v", got)
+	}
+}
+
 func newTestRewriter() *Rewriter {
 	return NewRewriter(&config.Config{
 		RewriteEnabled: true,
 		Hosts: []config.HostMapping{
-			{Node: "worker1", ArrayHost: "ocp4-1-worker1", IQN: "iqn.1994-05.com.redhat:aaa"},
+			{Node: "worker1", ArrayHost: "ocp4-1-worker1", IQNs: "iqn.1994-05.com.redhat:aaa"},
 		},
 	})
 }

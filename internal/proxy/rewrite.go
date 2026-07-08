@@ -12,13 +12,14 @@ import (
 )
 
 // Rewriter implements the FADA host-connection rewrites. px creates realm hosts named
-// "<realm>::<node>-<random>" and tries to give them the node's IQN — which fails because the
-// IQN already belongs to a pre-provisioned array-level host. The Rewriter maps every realm
-// host px references to its array-level host (matched by the stable <node> prefix from a static
-// config) and:
-//   - injects the array host's IQN into GET /hosts responses (so px sees its realm host as
-//     already having the right IQN and stops the create/patch retry loop),
-//   - fakes PATCH …add_iqns with a synthetic 200,
+// "<realm>::<node>-<random>" and tries to give them the node's initiators — which fails because
+// those initiators already belong to a pre-provisioned array-level host. Initiators span every
+// supported transport: iSCSI (IQNs), Fibre Channel (WWNs), and NVMe-TCP (NQNs). The Rewriter maps
+// every realm host px references to its array-level host (matched by the stable <node> prefix
+// from a static config) and:
+//   - injects the array host's initiators into GET /hosts responses (so px sees its realm host as
+//     already having them and stops the create/patch retry loop),
+//   - fakes PATCH …add_iqns / add_wwns / add_nqns with a synthetic 200,
 //   - rewrites POST/DELETE /connections onto the array-level host, issued with the array-level
 //     token (px's realm token cannot address that host).
 //
@@ -66,8 +67,8 @@ func (rw *Rewriter) RewriteRequest(fqdn string, r *http.Request) {
 	}
 }
 
-// ModifyResponse applies response-body rewrites: inject IQNs into GET /hosts, then map the real
-// array identity to this FQDN's synthetic one so px sees each realm as a distinct array.
+// ModifyResponse applies response-body rewrites: inject host initiators into GET /hosts, then map
+// the real array identity to this FQDN's synthetic one so px sees each realm as a distinct array.
 func (rw *Rewriter) ModifyResponse(fqdn string, resp *http.Response) {
 	rw.ModifyHostsResponse(resp)
 	if !rw.cfg.RewriteEnabled || rw.ident == nil || resp.Body == nil {
@@ -159,7 +160,7 @@ func (rw *Rewriter) Intercept(r *http.Request, body []byte) *synth {
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/hosts"):
 		return rw.getHostSynth(r)
 	case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/hosts"):
-		return rw.patchHostIQN(r, body)
+		return rw.patchHostInitiators(r, body)
 	case strings.HasSuffix(r.URL.Path, "/connections"):
 		// GET/POST/DELETE connections that reference a realm host must be mapped onto the
 		// array-level host (and the response mapped back), so px only ever sees its own name.
@@ -186,27 +187,46 @@ func (rw *Rewriter) getHostSynth(r *http.Request) *synth {
 	if i < 0 || names[i+2:] != hm.ArrayHost {
 		return nil // real realm host (e.g. <realm>::worker0-<uid>): pass through + inject
 	}
-	resp, _ := json.Marshal(map[string]any{"items": []map[string]any{{
-		"name": names, "iqns": []string{hm.IQN}, "connection_count": 1, "host_group": map[string]any{"name": nil},
-	}}})
-	logf("[rewrite] synthesized GET host (double-prefix) %s iqn=%s", names, hm.IQN)
+	item := map[string]any{"name": names, "connection_count": 1, "host_group": map[string]any{"name": nil}}
+	for _, in := range hm.Initiators() {
+		item[in.Field] = in.Vals
+	}
+	resp, _ := json.Marshal(map[string]any{"items": []map[string]any{item}})
+	logf("[rewrite] synthesized GET host (double-prefix) %s initiators=%v", names, hm.Initiators())
 	return &synth{status: http.StatusOK, body: resp}
 }
 
-// patchHostIQN fakes `PATCH /hosts?names=<realm-host>` add_iqns with a synthetic 200.
-func (rw *Rewriter) patchHostIQN(r *http.Request, body []byte) *synth {
+// patchHostInitiators fakes `PATCH /hosts?names=<realm-host>` add_iqns/add_wwns/add_nqns with a
+// synthetic 200 (the initiators already live on the array-level host, so the real PATCH would
+// 400). It echoes back whichever transports px asked to add.
+func (rw *Rewriter) patchHostInitiators(r *http.Request, body []byte) *synth {
 	name := r.URL.Query().Get("names")
 	if !isRealmHost(name) {
 		return nil
 	}
 	var b struct {
 		AddIQNs []string `json:"add_iqns"`
+		AddWWNs []string `json:"add_wwns"`
+		AddNQNs []string `json:"add_nqns"`
 	}
-	if err := json.Unmarshal(body, &b); err != nil || len(b.AddIQNs) == 0 {
+	if err := json.Unmarshal(body, &b); err != nil {
 		return nil
 	}
-	resp, _ := json.Marshal(map[string]any{"items": []map[string]any{{"name": name, "iqns": b.AddIQNs}}})
-	logf("[rewrite] faked PATCH add_iqns %s iqn=%s -> 200", name, b.AddIQNs[0])
+	item := map[string]any{"name": name}
+	for _, f := range []config.Initiator{
+		{Field: "iqns", Vals: b.AddIQNs},
+		{Field: "wwns", Vals: b.AddWWNs},
+		{Field: "nqns", Vals: b.AddNQNs},
+	} {
+		if len(f.Vals) > 0 {
+			item[f.Field] = f.Vals
+		}
+	}
+	if len(item) == 1 { // only "name": nothing to add
+		return nil
+	}
+	resp, _ := json.Marshal(map[string]any{"items": []map[string]any{item}})
+	logf("[rewrite] faked PATCH add-initiators %s -> 200", name)
 	return &synth{status: http.StatusOK, body: resp}
 }
 
@@ -253,9 +273,10 @@ func (rw *Rewriter) connection(r *http.Request, body []byte) *synth {
 	return &synth{status: status, body: respBody}
 }
 
-// ModifyHostsResponse injects the mapped array-level IQN into realm hosts in GET /hosts
-// responses, so px sees its realm host as already owning the node IQN (skipping the failing
-// add_iqns). It rewrites resp.Body in place; a no-op for non-/hosts or non-GET responses.
+// ModifyHostsResponse injects the mapped array-level initiators (IQNs/WWNs/NQNs) into realm hosts
+// in GET /hosts responses, so px sees its realm host as already owning them (skipping the failing
+// add_iqns/add_wwns/add_nqns). It rewrites resp.Body in place; a no-op for non-/hosts or non-GET
+// responses.
 func (rw *Rewriter) ModifyHostsResponse(resp *http.Response) {
 	if !rw.cfg.RewriteEnabled || resp.Request == nil || resp.Request.Method != http.MethodGet {
 		return
@@ -289,9 +310,11 @@ func (rw *Rewriter) ModifyHostsResponse(resp *http.Response) {
 		name, _ := m["name"].(string)
 		if hm := rw.resolve(name); hm != nil {
 			rw.learnRealmHost(name) // GET /hosts lists px's realm hosts — freshest source
-			if cur, _ := m["iqns"].([]any); len(cur) == 0 {
-				m["iqns"] = []string{hm.IQN}
-				changed = true
+			for _, in := range hm.Initiators() {
+				if cur, _ := m[in.Field].([]any); len(cur) == 0 {
+					m[in.Field] = in.Vals
+					changed = true
+				}
 			}
 		}
 	}
@@ -299,7 +322,7 @@ func (rw *Rewriter) ModifyHostsResponse(resp *http.Response) {
 	if changed {
 		if b, err := json.Marshal(generic); err == nil {
 			out = b
-			logf("[rewrite] injected IQNs into GET %s response", resp.Request.URL.RequestURI())
+			logf("[rewrite] injected initiators into GET %s response", resp.Request.URL.RequestURI())
 		}
 	}
 	resp.Body = io.NopCloser(strings.NewReader(string(out)))
