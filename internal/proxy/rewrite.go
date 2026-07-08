@@ -43,10 +43,12 @@ type Rewriter struct {
 	granted sync.Map // string -> bool
 }
 
-// resourceAccessPath grants an array-level host access into a realm. resource-accesses is a newer
-// Purity feature (6.8+); REST <= 2.36 returns 404 for it, so a version above the login version is
-// used here. Confirmed present on Purity 6.10.x/6.12.x (REST max 2.54/2.56).
-const resourceAccessPath = "/api/2.38/resource-accesses/batch"
+// resourceAccessPath grants an array-level host access into a realm. resource-accesses first
+// appears at REST 2.40 (2.36 and 2.38 return 404) — verified against the lab array (Purity 6.10.6,
+// REST max 2.54); prod (6.12, max 2.56) is newer and also supports it. GET on the /batch route
+// returns 405, confirming it is the POST batch-create endpoint; a 400 "Resource access already
+// exists" means the grant is already in place (handled as success by ensureRealmAccess).
+const resourceAccessPath = "/api/2.40/resource-accesses/batch"
 
 func NewRewriter(cfg *config.Config) *Rewriter {
 	byNode := make(map[string]config.HostMapping, len(cfg.Hosts))
