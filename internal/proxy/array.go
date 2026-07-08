@@ -54,6 +54,12 @@ func (s *arraySession) login() error {
 	return nil
 }
 
+// validate performs a single login so a misconfigured array-admin token surfaces in the logs at
+// startup, instead of silently on the first connection rewrite minutes later. The array-admin
+// session is mandatory: only an array-level identity can connect a realm/pod volume to an
+// array-level host, so a failure here means connection rewrites will not work.
+func (s *arraySession) validate() error { return s.login() }
+
 func (s *arraySession) token() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -93,6 +94,28 @@ func TestInjectAllTransports(t *testing.T) {
 	out, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(out), "21000024ff00aaaa") || !strings.Contains(string(out), "nqn.2014-08.org.nvmexpress:uuid:abc") {
 		t.Errorf("initiators not injected: %s", out)
+	}
+}
+
+// The startup array-admin self-check succeeds when the array returns a session token on login and
+// fails loudly otherwise, so a bad SHIM_ARRAY_TOKEN surfaces at boot rather than on first attach.
+func TestArraySessionValidate(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-auth-token", "sess-123")
+	}))
+	defer ok.Close()
+	u, _ := url.Parse(ok.URL)
+	if err := newArraySession(u, "tok", true).validate(); err != nil {
+		t.Errorf("validate should succeed when a token is returned, got %v", err)
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // no x-auth-token
+	}))
+	defer bad.Close()
+	ub, _ := url.Parse(bad.URL)
+	if err := newArraySession(ub, "tok", true).validate(); err == nil {
+		t.Error("validate should fail when no x-auth-token is returned")
 	}
 }
 

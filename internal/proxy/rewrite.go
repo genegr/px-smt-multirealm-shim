@@ -49,6 +49,17 @@ func NewRewriter(cfg *config.Config) *Rewriter {
 		arr = newArraySession(cfg.UpstreamURL, cfg.ArrayToken, cfg.InsecureUpstream)
 	}
 	logf("[rewrite] enabled=%v hosts=%d arrayToken=%v", cfg.RewriteEnabled, len(byNode), arr != nil)
+	if arr != nil {
+		// Surface a bad array-admin token immediately at startup rather than on the first
+		// connection rewrite. Async so an unreachable array doesn't delay the listener.
+		go func() {
+			if err := arr.validate(); err != nil {
+				logf("[rewrite] array-admin login FAILED at startup: %v (connection rewrites will 502 until fixed)", err)
+			} else {
+				logf("[rewrite] array-admin login OK")
+			}
+		}()
+	}
 	rw := &Rewriter{cfg: cfg, byNode: byNode, arr: arr}
 	rw.ident = &arrayIdentity{rw: rw}
 	return rw
