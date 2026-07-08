@@ -281,7 +281,18 @@ func (rw *Rewriter) ModifyHostsResponse(resp *http.Response) {
 	if !rw.cfg.RewriteEnabled || resp.Request == nil || resp.Request.Method != http.MethodGet {
 		return
 	}
-	if !strings.HasSuffix(resp.Request.URL.Path, "/hosts") || resp.StatusCode != http.StatusOK {
+	if !strings.HasSuffix(resp.Request.URL.Path, "/hosts") {
+		return
+	}
+	// Purity returns 400 "No matching hosts found" when a names=<realm>::* filter matches zero
+	// hosts, instead of an empty 200. px treats that 400 as fatal and loops forever instead of
+	// creating its realm host. For a wildcard host-list query, rewrite it to an empty 200 (the
+	// truthful answer for a list that matched nothing) so px falls through to create the host.
+	if resp.StatusCode == http.StatusBadRequest {
+		rw.emptyHostsIfNoMatch(resp)
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
 		return
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -328,6 +339,28 @@ func (rw *Rewriter) ModifyHostsResponse(resp *http.Response) {
 	resp.Body = io.NopCloser(strings.NewReader(string(out)))
 	resp.ContentLength = int64(len(out))
 	resp.Header.Del("Content-Length")
+}
+
+// emptyHostsIfNoMatch converts a 400 "No matching hosts found" on a wildcard GET /hosts list into
+// an empty 200, so px sees "zero realm hosts" and creates one instead of erroring in a loop. Only
+// wildcard (names=…*) queries are touched; any other 400 body is passed through untouched.
+func (rw *Rewriter) emptyHostsIfNoMatch(resp *http.Response) {
+	names := resp.Request.URL.Query().Get("names")
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(names, "*") && strings.Contains(strings.ToLower(string(body)), "no matching hosts") {
+		const empty = `{"continuation_token":null,"items":[],"more_items_remaining":false,"total_item_count":null}`
+		resp.StatusCode = http.StatusOK
+		resp.Status = "200 OK"
+		resp.Body = io.NopCloser(strings.NewReader(empty))
+		resp.ContentLength = int64(len(empty))
+		resp.Header.Del("Content-Length")
+		resp.Header.Set("Content-Type", "application/json")
+		logf("[rewrite] converted 400 no-matching-hosts -> empty 200 for %s", resp.Request.URL.RequestURI())
+		return
+	}
+	resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	resp.ContentLength = int64(len(body))
 }
 
 func nilIfEmpty(b []byte) []byte {

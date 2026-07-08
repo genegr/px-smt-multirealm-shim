@@ -96,6 +96,45 @@ func TestInjectAllTransports(t *testing.T) {
 	}
 }
 
+// A wildcard GET /hosts that 400s with "No matching hosts found" is converted to an empty 200 so
+// px creates its realm host instead of looping; an unrelated 400 passes through untouched.
+func TestEmptyHostsOnNoMatchWildcard(t *testing.T) {
+	rw := newTestRewriter()
+	mk := func(target, body string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{},
+			Request:    httptest.NewRequest(http.MethodGet, target, nil),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}
+	}
+
+	resp := mk("https://realm/api/2.2/hosts?filter=is_local%3D%27true%27&names=ocp4-1-realm1::*",
+		`{"errors":[{"context":"ocp4-1-realm1::*","message":"No matching hosts found."}]}`)
+	rw.ModifyHostsResponse(resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wildcard no-match not converted, status=%d", resp.StatusCode)
+	}
+	if out, _ := io.ReadAll(resp.Body); !strings.Contains(string(out), `"items":[]`) {
+		t.Errorf("expected empty items, got %s", out)
+	}
+
+	pass := mk("https://realm/api/2.2/hosts?names=ocp4-1-realm1::*",
+		`{"errors":[{"message":"Some other error."}]}`)
+	rw.ModifyHostsResponse(pass)
+	if pass.StatusCode != http.StatusBadRequest {
+		t.Errorf("unrelated 400 should pass through, got %d", pass.StatusCode)
+	}
+
+	// A non-wildcard 400 must also pass through (only list queries get the empty-200 treatment).
+	nonWild := mk("https://realm/api/2.2/hosts?names=ocp4-1-realm1::worker1-x",
+		`{"errors":[{"message":"No matching hosts found."}]}`)
+	rw.ModifyHostsResponse(nonWild)
+	if nonWild.StatusCode != http.StatusBadRequest {
+		t.Errorf("non-wildcard 400 should pass through, got %d", nonWild.StatusCode)
+	}
+}
+
 // The legacy singular "iqn" field is still honored when "iqns" is unset.
 func TestLegacyIQNFallback(t *testing.T) {
 	got := config.HostMapping{LegacyIQN: "iqn.legacy:1"}.Initiators()

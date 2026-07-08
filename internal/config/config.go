@@ -110,6 +110,20 @@ func (h HostMapping) Initiators() []Initiator {
 	return out
 }
 
+// sanitizeAPIToken removes every ASCII whitespace/control byte (space, tab, CR, LF, DEL, and other
+// control chars) from a FlashArray API token, wherever it appears. Go's net/http rejects a request
+// header whose value contains such bytes with "invalid header field value"; a token pasted from a
+// file or created via `echo` often carries a trailing newline. Real tokens have no whitespace, so
+// stripping is safe and leaves the token intact.
+func sanitizeAPIToken(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r <= 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // splitCSV splits a comma-separated list, trimming whitespace and dropping empty entries.
 func splitCSV(s string) []string {
 	var out []string
@@ -137,7 +151,10 @@ func FromEnv() (*Config, error) {
 		CertFile:         os.Getenv("SHIM_CERT_FILE"),
 		KeyFile:          os.Getenv("SHIM_KEY_FILE"),
 		RewriteEnabled:   envBool("SHIM_REWRITE", true),
-		ArrayToken:       os.Getenv("SHIM_ARRAY_TOKEN"),
+		// Sanitize: a secret created with a stray newline/CR/tab (even in the middle) would make Go
+		// reject the "api-token" request header ("invalid header field value") on every array login.
+		// A FlashArray API token has no whitespace, so we strip every control/whitespace byte.
+		ArrayToken: sanitizeAPIToken(os.Getenv("SHIM_ARRAY_TOKEN")),
 	}
 
 	if path := os.Getenv("SHIM_CONFIG_FILE"); path != "" {
