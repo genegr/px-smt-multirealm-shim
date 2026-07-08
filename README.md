@@ -106,13 +106,14 @@ Manifests live in [`deploy/`](deploy/).
 1. **Shim** — [`deploy/px-shim.yaml`](deploy/px-shim.yaml): namespace `px-shim`, a Deployment, and
    a ClusterIP Service (443 → 9443). It reads a `px-shim-config` secret containing:
    - `config.json` — the static node → array-host → initiators map. Each host lists the initiator
-     identifiers it owns per transport as **comma-separated** `iqns` (iSCSI), `wwns` (FC), and/or
-     `nqns` (NVMe-TCP); set only the transports a node actually uses:
+     identifiers it owns per transport in `iqns` (iSCSI), `wwns` (FC), and/or `nqns` (NVMe-TCP);
+     set only the transports a node actually uses. **Every list uses the same syntax: entries are
+     comma-separated** (`,`). The `:` inside an IQN/NQN is part of the identifier, not a separator:
      ```json
      { "hosts": [
-       {"node":"worker0","arrayHost":"ocp4-1-worker0","iqns":"iqn.1994-05.com.redhat:<node-iqn>"},
+       {"node":"worker0","arrayHost":"ocp4-1-worker0","iqns":"iqn.1994-05.com.redhat:<iqn-a>,iqn.1994-05.com.redhat:<iqn-b>"},
        {"node":"worker1","arrayHost":"ocp4-1-worker1","wwns":"<wwn-a>,<wwn-b>"},
-       {"node":"worker2","arrayHost":"ocp4-1-worker2","nqns":"<node-nqn>"}
+       {"node":"worker2","arrayHost":"ocp4-1-worker2","nqns":"<nqn-a>,<nqn-b>"}
      ] }
      ```
      The legacy singular `"iqn"` key is still accepted (folded into `iqns`) for older secrets.
