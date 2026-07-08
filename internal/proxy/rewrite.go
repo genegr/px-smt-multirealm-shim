@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -37,7 +38,15 @@ type Rewriter struct {
 	// double-prefixed name, and churns the connection (delete+reconnect) — reassigning the LUN
 	// each cycle until the multipath device goes read-only and FADA writes are lost.
 	byArrayHost sync.Map // string -> string
+	// granted caches the (arrayHost \x00 realm) pairs the shim has already granted realm access
+	// for, so the one-time resource-access grant is issued at most once per host/realm.
+	granted sync.Map // string -> bool
 }
+
+// resourceAccessPath grants an array-level host access into a realm. resource-accesses is a newer
+// Purity feature (6.8+); REST <= 2.36 returns 404 for it, so a version above the login version is
+// used here. Confirmed present on Purity 6.10.x/6.12.x (REST max 2.54/2.56).
+const resourceAccessPath = "/api/2.38/resource-accesses/batch"
 
 func NewRewriter(cfg *config.Config) *Rewriter {
 	byNode := make(map[string]config.HostMapping, len(cfg.Hosts))
@@ -241,6 +250,44 @@ func (rw *Rewriter) patchHostInitiators(r *http.Request, body []byte) *synth {
 	return &synth{status: http.StatusOK, body: resp}
 }
 
+// realmOf returns the realm prefix of a "<realm>::…" name, or "" if the name is not realm-scoped.
+func realmOf(name string) string {
+	if i := strings.Index(name, "::"); i >= 0 {
+		return name[:i]
+	}
+	return ""
+}
+
+// ensureRealmAccess grants the array-level host permission to operate inside the realm, so the
+// array will let it connect that realm's volumes. Without this the array refuses the connection
+// exactly as if the shim were not present. It is a one-time, per-(host,realm) provisioning grant
+// (POST /resource-accesses/batch, issued with the array-admin token): a 200 means it was created,
+// and a 400 that mentions the grant already exists is equally fine. The result is cached so the
+// call is made at most once per host/realm.
+func (rw *Rewriter) ensureRealmAccess(arrayHost, realm string) error {
+	if arrayHost == "" || realm == "" {
+		return nil
+	}
+	key := arrayHost + "\x00" + realm
+	if _, ok := rw.granted.Load(key); ok {
+		return nil
+	}
+	body, _ := json.Marshal([]map[string]any{{
+		"resource": map[string]string{"name": arrayHost, "resource_type": "hosts"},
+		"scope":    map[string]string{"name": realm, "resource_type": "realms"},
+	}})
+	status, respBody, err := rw.arr.do(http.MethodPost, resourceAccessPath, body)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusOK || (status == http.StatusBadRequest && strings.Contains(strings.ToLower(string(respBody)), "exist")) {
+		rw.granted.Store(key, true)
+		logf("[rewrite] realm-access grant host=%s realm=%s => %d", arrayHost, realm, status)
+		return nil
+	}
+	return fmt.Errorf("realm-access grant host=%s realm=%s -> %d %s", arrayHost, realm, status, strings.TrimSpace(string(respBody)))
+}
+
 // connection makes GET/POST/DELETE /connections transparent when host_names is a realm host:
 // it rewrites host_names onto the array-level host, issues the call with the array-level token
 // (px's realm token cannot address that host), and rewrites the array host name back to the
@@ -265,6 +312,15 @@ func (rw *Rewriter) connection(r *http.Request, body []byte) *synth {
 	q.Set("host_names", hm.ArrayHost)
 	path := r.URL.Path + "?" + q.Encode()
 	id := connCounter.Add(1)
+	// Creating the connection means attaching a realm/pod volume to the array-level host. The
+	// array only permits that once the host has been granted access into the realm, so ensure the
+	// grant first (idempotent, cached). Reads (GET) and removals (DELETE) don't need it.
+	if r.Method == http.MethodPost {
+		if err := rw.ensureRealmAccess(hm.ArrayHost, realmOf(hostNames)); err != nil {
+			logf("[rewrite] connection#%d %s %s -> realm-access grant error: %v", id, r.Method, hostNames, err)
+			return &synth{status: http.StatusBadGateway, body: []byte(`{"errors":[{"message":"px-smt-multirealm-shim realm-access grant error"}]}`)}
+		}
+	}
 	status, respBody, err := rw.arr.do(r.Method, path, nilIfEmpty(body))
 	if err != nil {
 		logf("[rewrite] connection#%d %s %s -> upstream error: %v", id, r.Method, hostNames, err)
