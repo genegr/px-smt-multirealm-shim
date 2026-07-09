@@ -80,7 +80,7 @@ spec:
         - operator: Exists     # run everywhere, incl. tainted infra/master if labeled worker
       containers:
         - name: cleaner
-          image: <dev-host-ip>:5000/px-fada-cleaner:v3
+          image: <dev-host-ip>:5000/px-fada-cleaner:v4
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true   # required for nsenter into PID 1 + sysfs device delete
@@ -89,10 +89,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - { name: FADA_POLL_SECONDS, value: "8" }   # backstop poll interval
-            - { name: FADA_GRACE_POLLS,  value: "2" }   # poll-path hysteresis (watch bypasses)
-            - { name: FADA_VENDOR,       value: "PURE" }
-            - { name: FADA_DRY_RUN,      value: "false" }
+            - { name: FADA_POLL_SECONDS,      value: "8" }   # backstop poll interval
+            - { name: FADA_HEARTBEAT_SECONDS, value: "300" } # max quiet interval before a liveness log line
+            - { name: FADA_GRACE_POLLS,       value: "2" }   # poll-path hysteresis (watch bypasses)
+            - { name: FADA_VENDOR,            value: "PURE" }
+            - { name: FADA_DRY_RUN,           value: "false" }
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits:   { cpu: 200m, memory: 128Mi }

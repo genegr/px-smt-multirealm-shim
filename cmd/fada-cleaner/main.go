@@ -46,21 +46,27 @@ import (
 )
 
 type mpMap struct {
-	WWID   string
+	Name   string   // dm map name as multipathd/dmsetup know it — WWID, or an alias/friendly name
+	WWID   string   // the SCSI WWID (== Name when user_friendly_names off)
 	DM     string   // e.g. dm-9
 	Vendor string   // e.g. "PURE,FlashArray"
 	Paths  []string // backing sd device names, e.g. sdj
 }
 
 var (
-	// Header line: "3624a9370... dm-9 PURE,FlashArray"  (user_friendly_names off → name == WWID)
-	reHeader = regexp.MustCompile(`^([0-9a-fA-F]{20,})\s+(dm-\d+)\s+(\S+)`)
+	// Header, user_friendly_names/alias form: "mpatha (3624a9370...) dm-9 PURE,FlashArray".
+	// FC hosts (and any host with aliases configured) use this form; the map name is NOT the
+	// WWID, so we must capture both — dmsetup/open-count key off the name, scsi_id off the WWID.
+	reHeaderAlias = regexp.MustCompile(`^(\S+)\s+\(([0-9a-fA-F]{20,})\)\s+(dm-\d+)\s+(\S+)`)
+	// Header, plain form: "3624a9370... dm-9 PURE,FlashArray"  (user_friendly_names off → name == WWID).
+	reHeaderPlain = regexp.MustCompile(`^([0-9a-fA-F]{20,})\s+(dm-\d+)\s+(\S+)`)
 	// Path line: "|- 3:0:0:200 sdk 8:160 active ready running" / "`- 4:0:0:200 sdj ..."
 	rePath = regexp.MustCompile(`\b\d+:\d+:\d+:\d+\s+(sd[a-z]+)\b`)
 )
 
 type config struct {
 	pollEvery  time.Duration
+	heartbeat  time.Duration
 	gracePolls int
 	vendor     string
 	dryRun     bool
@@ -68,10 +74,15 @@ type config struct {
 }
 
 func loadConfig() config {
-	c := config{pollEvery: 8 * time.Second, gracePolls: 2, vendor: "PURE", dryRun: false, nodeName: os.Getenv("NODE_NAME")}
+	c := config{pollEvery: 8 * time.Second, heartbeat: 5 * time.Minute, gracePolls: 2, vendor: "PURE", dryRun: false, nodeName: os.Getenv("NODE_NAME")}
 	if v := os.Getenv("FADA_POLL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.pollEvery = time.Duration(n) * time.Second
+		}
+	}
+	if v := os.Getenv("FADA_HEARTBEAT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.heartbeat = time.Duration(n) * time.Second
 		}
 	}
 	if v := os.Getenv("FADA_GRACE_POLLS"); v != "" {
@@ -109,11 +120,18 @@ func parseMultipath(out string) []mpMap {
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		line := sc.Text()
-		if m := reHeader.FindStringSubmatch(line); m != nil {
+		if m := reHeaderAlias.FindStringSubmatch(line); m != nil {
 			if cur != nil {
 				maps = append(maps, *cur)
 			}
-			cur = &mpMap{WWID: strings.ToLower(m[1]), DM: m[2], Vendor: m[3]}
+			cur = &mpMap{Name: m[1], WWID: strings.ToLower(m[2]), DM: m[3], Vendor: m[4]}
+			continue
+		}
+		if m := reHeaderPlain.FindStringSubmatch(line); m != nil {
+			if cur != nil {
+				maps = append(maps, *cur)
+			}
+			cur = &mpMap{Name: m[1], WWID: strings.ToLower(m[1]), DM: m[2], Vendor: m[3]}
 			continue
 		}
 		if cur != nil {
@@ -189,9 +207,10 @@ func pathsStale(m mpMap) (bool, string) {
 // backing SCSI device so the iSCSI LUN is fully logged out and cannot be silently reused.
 func fullDisconnect(m mpMap, dryRun bool) {
 	if dryRun {
-		logf("DRYRUN would flush wwid=%s dm=%s paths=%v", m.WWID, m.DM, m.Paths)
+		logf("DRYRUN would flush name=%s wwid=%s dm=%s paths=%v", m.Name, m.WWID, m.DM, m.Paths)
 		return
 	}
+	// Flush by WWID; multipathd resolves it whether or not the map carries an alias.
 	if out, err := hostCmd("multipath", "-f", m.WWID); err != nil {
 		logf("WARN multipath -f wwid=%s err=%v out=%q", m.WWID, err, strings.TrimSpace(out))
 	}
@@ -201,17 +220,22 @@ func fullDisconnect(m mpMap, dryRun bool) {
 			logf("WARN delete path=%s err=%v out=%q", dev, err, strings.TrimSpace(out))
 		}
 	}
-	logf("FLUSHED wwid=%s dm=%s paths=%v", m.WWID, m.DM, m.Paths)
+	logf("FLUSHED name=%s wwid=%s dm=%s paths=%v", m.Name, m.WWID, m.DM, m.Paths)
 }
+
+// scanResult summarizes one pass for observability: how many of our maps were seen, how many were
+// idle (open=0), stale, and actually flushed. main() decides how to surface it in the log.
+type scanResult struct{ pure, idle, stale, flushed int }
 
 // scanAndClean runs one cleanup pass. trigger describes why (poll / volumeattachment-delete);
 // on a detach event a stale map is flushed immediately, otherwise it must persist across the
 // grace streak. orphanStreak is shared across passes and mutated here.
-func scanAndClean(cfg config, orphanStreak map[string]int, trigger string) {
+func scanAndClean(cfg config, orphanStreak map[string]int, trigger string) scanResult {
+	var r scanResult
 	out, err := hostCmd("multipath", "-ll")
 	if err != nil && out == "" {
 		logf("WARN multipath -ll err=%v", err)
-		return
+		return r
 	}
 	event := trigger != "poll"
 	seen := map[string]bool{}
@@ -219,22 +243,26 @@ func scanAndClean(cfg config, orphanStreak map[string]int, trigger string) {
 		if !strings.Contains(strings.ToUpper(m.Vendor), strings.ToUpper(cfg.vendor)) {
 			continue // only our FlashArray devices
 		}
+		r.pure++
 		seen[m.WWID] = true
-		if openCount(m.WWID) != 0 {
+		if openCount(m.Name) != 0 {
 			orphanStreak[m.WWID] = 0 // in use (or indeterminate) → hands off
 			continue
 		}
+		r.idle++
 		stale, reason := pathsStale(m)
 		if !stale {
 			// open=0 but paths healthy: a briefly-unmounted, still-attached volume. Never flush.
 			orphanStreak[m.WWID] = 0
 			continue
 		}
+		r.stale++
 		orphanStreak[m.WWID]++
 		if event || orphanStreak[m.WWID] >= cfg.gracePolls {
-			logf("STALE wwid=%s open=0 reason=%s trigger=%s streak=%d -> full disconnect",
-				m.WWID, reason, trigger, orphanStreak[m.WWID])
+			logf("STALE name=%s wwid=%s open=0 reason=%s trigger=%s streak=%d -> full disconnect",
+				m.Name, m.WWID, reason, trigger, orphanStreak[m.WWID])
 			fullDisconnect(m, cfg.dryRun)
+			r.flushed++
 			delete(orphanStreak, m.WWID)
 		}
 	}
@@ -243,6 +271,7 @@ func scanAndClean(cfg config, orphanStreak map[string]int, trigger string) {
 			delete(orphanStreak, w)
 		}
 	}
+	return r
 }
 
 // watchVolumeAttachments streams VolumeAttachment events from the API server using the
@@ -316,12 +345,26 @@ func watchVolumeAttachments(cfg config, trigger chan<- struct{}) {
 
 func main() {
 	cfg := loadConfig()
-	logf("fada-cleaner v2 start node=%q poll=%s grace=%d vendor=%q dryRun=%v",
-		cfg.nodeName, cfg.pollEvery, cfg.gracePolls, cfg.vendor, cfg.dryRun)
+	logf("fada-cleaner v2 start node=%q poll=%s heartbeat=%s grace=%d vendor=%q dryRun=%v",
+		cfg.nodeName, cfg.pollEvery, cfg.heartbeat, cfg.gracePolls, cfg.vendor, cfg.dryRun)
 
 	orphanStreak := map[string]int{}
 	var mu sync.Mutex // scans never overlap
 	trigger := make(chan struct{}, 1)
+
+	// Keep OCP `oc logs` showing liveness: log every scan whose result changed or flushed
+	// something, and at least once per heartbeat interval even when nothing changes — so a quiet,
+	// healthy node still emits a recurring line instead of going silent after startup.
+	var lastSummary string
+	var lastLog time.Time
+	report := func(trigger string, r scanResult) {
+		s := fmt.Sprintf("pure=%d idle=%d stale=%d flushed=%d", r.pure, r.idle, r.stale, r.flushed)
+		now := time.Now()
+		if trigger != "poll" || r.flushed > 0 || s != lastSummary || now.Sub(lastLog) >= cfg.heartbeat {
+			logf("scan trigger=%s %s", trigger, s)
+			lastSummary, lastLog = s, now
+		}
+	}
 
 	go watchVolumeAttachments(cfg, trigger)
 
@@ -331,14 +374,16 @@ func main() {
 		select {
 		case <-ticker.C:
 			mu.Lock()
-			scanAndClean(cfg, orphanStreak, "poll")
+			r := scanAndClean(cfg, orphanStreak, "poll")
 			mu.Unlock()
+			report("poll", r)
 		case <-trigger:
 			// Give the kernel/multipathd a moment to mark the just-detached paths failed.
 			time.Sleep(2 * time.Second)
 			mu.Lock()
-			scanAndClean(cfg, orphanStreak, "volumeattachment-delete")
+			r := scanAndClean(cfg, orphanStreak, "volumeattachment-delete")
 			mu.Unlock()
+			report("volumeattachment-delete", r)
 		}
 	}
 }
