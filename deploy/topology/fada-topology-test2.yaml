@@ -1,0 +1,106 @@
+# Comprehensive per-zone FADA test:
+#  - Two StorageClasses, one per realm (pxe-1=realm-1, pxe-2=realm-2), BOTH restricted to
+#    allowedTopologies {zone-a, zone-b} -> a pod in zone-c gets a HARD provisioning refusal
+#    (no fallback / no orphan volume).
+#  - realm-1: pod a1 on worker0(zone-a)->x50, pod b1 on worker1(zone-b)->x20
+#  - realm-2: pod a2 on worker0(zone-a)->x50, pod b2 on worker1(zone-b)->x20
+#  - exclusion: pod c1 on worker2(zone-c) -> PVC stays Pending, provisioning refused
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fada-test
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: px-fada-r1 }
+provisioner: pxd.portworx.com
+parameters: { backend: "pure_block", pure_fa_pod_name: "pxe-1" }
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.portworx.io/zone
+        values: ["zone-a", "zone-b"]
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: px-fada-r2 }
+provisioner: pxd.portworx.com
+parameters: { backend: "pure_block", pure_fa_pod_name: "pxe-2" }
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.portworx.io/zone
+        values: ["zone-a", "zone-b"]
+---
+# realm-1
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: a1, namespace: fada-test }
+spec: { accessModes: [ReadWriteOnce], storageClassName: px-fada-r1, resources: { requests: { storage: 10Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: b1, namespace: fada-test }
+spec: { accessModes: [ReadWriteOnce], storageClassName: px-fada-r1, resources: { requests: { storage: 10Gi } } }
+---
+# realm-2
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: a2, namespace: fada-test }
+spec: { accessModes: [ReadWriteOnce], storageClassName: px-fada-r2, resources: { requests: { storage: 10Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: b2, namespace: fada-test }
+spec: { accessModes: [ReadWriteOnce], storageClassName: px-fada-r2, resources: { requests: { storage: 10Gi } } }
+---
+# zone-c exclusion
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: c1, namespace: fada-test }
+spec: { accessModes: [ReadWriteOnce], storageClassName: px-fada-r1, resources: { requests: { storage: 10Gi } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: a1, namespace: fada-test }
+spec:
+  nodeSelector: { kubernetes.io/hostname: worker0.ocp4-dev.demo.pure }
+  containers: [{ name: app, image: registry.access.redhat.com/ubi9/ubi-minimal, command: ["/bin/sh","-c","echo a1 > /data/m; dd if=/dev/zero of=/data/f bs=1M count=30 conv=fsync; echo WROTE_a1; sleep 3600"], volumeMounts: [{ name: d, mountPath: /data }] }]
+  volumes: [{ name: d, persistentVolumeClaim: { claimName: a1 } }]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: b1, namespace: fada-test }
+spec:
+  nodeSelector: { kubernetes.io/hostname: worker1.ocp4-dev.demo.pure }
+  containers: [{ name: app, image: registry.access.redhat.com/ubi9/ubi-minimal, command: ["/bin/sh","-c","echo b1 > /data/m; dd if=/dev/zero of=/data/f bs=1M count=30 conv=fsync; echo WROTE_b1; sleep 3600"], volumeMounts: [{ name: d, mountPath: /data }] }]
+  volumes: [{ name: d, persistentVolumeClaim: { claimName: b1 } }]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: a2, namespace: fada-test }
+spec:
+  nodeSelector: { kubernetes.io/hostname: worker0.ocp4-dev.demo.pure }
+  containers: [{ name: app, image: registry.access.redhat.com/ubi9/ubi-minimal, command: ["/bin/sh","-c","echo a2 > /data/m; dd if=/dev/zero of=/data/f bs=1M count=30 conv=fsync; echo WROTE_a2; sleep 3600"], volumeMounts: [{ name: d, mountPath: /data }] }]
+  volumes: [{ name: d, persistentVolumeClaim: { claimName: a2 } }]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: b2, namespace: fada-test }
+spec:
+  nodeSelector: { kubernetes.io/hostname: worker1.ocp4-dev.demo.pure }
+  containers: [{ name: app, image: registry.access.redhat.com/ubi9/ubi-minimal, command: ["/bin/sh","-c","echo b2 > /data/m; dd if=/dev/zero of=/data/f bs=1M count=30 conv=fsync; echo WROTE_b2; sleep 3600"], volumeMounts: [{ name: d, mountPath: /data }] }]
+  volumes: [{ name: d, persistentVolumeClaim: { claimName: b2 } }]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: c1, namespace: fada-test }
+spec:
+  nodeSelector: { kubernetes.io/hostname: worker2.ocp4-dev.demo.pure }
+  containers: [{ name: app, image: registry.access.redhat.com/ubi9/ubi-minimal, command: ["/bin/sh","-c","echo c1 > /data/m; sleep 3600"], volumeMounts: [{ name: d, mountPath: /data }] }]
+  volumes: [{ name: d, persistentVolumeClaim: { claimName: c1 } }]

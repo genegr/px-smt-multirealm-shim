@@ -1,0 +1,101 @@
+# Two shims for the topology scenario, one per physical array, in the px-shim namespace.
+#   px-shim-x50 -> https://10.23.26.50 (zone-a), SANs x50-1a/x50-2a.demo.pure, host map worker0
+#   px-shim-x20 -> https://10.23.26.60 (zone-b), SANs x20-1b/x20-2b.demo.pure, host map worker1+worker2
+# Each fronts one physical array carrying two realms (realm-1, realm-2) presented as two FQDNs, so
+# SHIM_ARRAY_IDENTITY=true (stop PX de-duplicating the two realms on one array). Rewrite on.
+# Image is the sideloaded px-shim.local/shim:baseline (imagePullPolicy: Never).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: px-shim
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: px-shim-x50, namespace: px-shim, labels: { app: px-shim-x50 } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: px-shim-x50 } }
+  template:
+    metadata: { labels: { app: px-shim-x50 } }
+    spec:
+      containers:
+        - name: px-shim
+          image: px-shim.local/shim:baseline
+          imagePullPolicy: Never
+          ports: [{ name: https, containerPort: 9443 }]
+          env:
+            - { name: SHIM_LISTEN_ADDR, value: ":9443" }
+            - { name: SHIM_UPSTREAM_URL, value: "https://10.23.26.50" }
+            - { name: SHIM_UPSTREAM_INSECURE, value: "true" }
+            - { name: SHIM_CERT_SANS, value: "x50-1a.demo.pure,x50-2a.demo.pure" }
+            - { name: SHIM_LOG_BODIES, value: "true" }
+            - { name: SHIM_REWRITE, value: "true" }
+            - { name: SHIM_ARRAY_IDENTITY, value: "true" }
+            - { name: SHIM_CONFIG_FILE, value: "/etc/px-shim/config.json" }
+            - name: SHIM_ARRAY_TOKEN
+              valueFrom: { secretKeyRef: { name: px-shim-x50-config, key: array-token } }
+          volumeMounts: [{ name: config, mountPath: /etc/px-shim, readOnly: true }]
+          readinessProbe: { tcpSocket: { port: 9443 }, initialDelaySeconds: 3, periodSeconds: 10 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: config
+          secret: { secretName: px-shim-x50-config, items: [{ key: config.json, path: config.json }] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: px-shim-x50, namespace: px-shim, labels: { app: px-shim-x50 } }
+spec:
+  type: ClusterIP
+  selector: { app: px-shim-x50 }
+  ports: [{ name: https, port: 443, targetPort: 9443 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: px-shim-x20, namespace: px-shim, labels: { app: px-shim-x20 } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: px-shim-x20 } }
+  template:
+    metadata: { labels: { app: px-shim-x20 } }
+    spec:
+      containers:
+        - name: px-shim
+          image: px-shim.local/shim:baseline
+          imagePullPolicy: Never
+          ports: [{ name: https, containerPort: 9443 }]
+          env:
+            - { name: SHIM_LISTEN_ADDR, value: ":9443" }
+            - { name: SHIM_UPSTREAM_URL, value: "https://10.23.26.60" }
+            - { name: SHIM_UPSTREAM_INSECURE, value: "true" }
+            - { name: SHIM_CERT_SANS, value: "x20-1b.demo.pure,x20-2b.demo.pure" }
+            - { name: SHIM_LOG_BODIES, value: "true" }
+            - { name: SHIM_REWRITE, value: "true" }
+            - { name: SHIM_ARRAY_IDENTITY, value: "true" }
+            - { name: SHIM_CONFIG_FILE, value: "/etc/px-shim/config.json" }
+            - name: SHIM_ARRAY_TOKEN
+              valueFrom: { secretKeyRef: { name: px-shim-x20-config, key: array-token } }
+          volumeMounts: [{ name: config, mountPath: /etc/px-shim, readOnly: true }]
+          readinessProbe: { tcpSocket: { port: 9443 }, initialDelaySeconds: 3, periodSeconds: 10 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: config
+          secret: { secretName: px-shim-x20-config, items: [{ key: config.json, path: config.json }] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: px-shim-x20, namespace: px-shim, labels: { app: px-shim-x20 } }
+spec:
+  type: ClusterIP
+  selector: { app: px-shim-x20 }
+  ports: [{ name: https, port: 443, targetPort: 9443 }]

@@ -1,0 +1,38 @@
+# Portworx StorageCluster for the multi-array topology scenario.
+#   zone-a = x50 (via shims x50-1a/x50-2a), zone-b = x20 (via shims x20-1b/x20-2b)
+#   worker0 -> zone-a, worker1/worker2 -> zone-b
+# FACD_TOPOLOGY_ENABLED makes PX provision StoreV2 cloud drives only on the array in each node's
+# zone. Cloud drives use pod pxe-1 (realm-1) on every array (same pod name required for SMT+topology).
+# Fibre Channel via PURE_FLASHARRAY_SAN_TYPE=FC. pure.json (4 entries, zone Labels) in px-pure-secret.
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-topo
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  cloudStorage:
+    deviceSpecs:
+      - "size=150,pod=pxe-1"
+    systemMetadataDeviceSpec: "size=64,pod=pxe-1"
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+    topology:
+      enabled: true
+  env:
+    - name: PURE_FLASHARRAY_SAN_TYPE
+      value: "FC"
+    - name: FACD_TOPOLOGY_ENABLED
+      value: "true"
+  deleteStrategy:
+    type: UninstallAndDelete

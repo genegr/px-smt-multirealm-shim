@@ -1,0 +1,94 @@
+# fada-cleaner for the topology cluster. Sideloaded image (imagePullPolicy: Never).
+# Starts in DRY-RUN so we can confirm it classifies the 4 stale rebuild-leftover maps as
+# flushable while leaving the live PX cloud drives (open-count > 0) untouched.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: px-fada-cleaner
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: px-fada-cleaner
+  namespace: px-fada-cleaner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: px-fada-cleaner-scc
+  namespace: px-fada-cleaner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: px-fada-cleaner
+    namespace: px-fada-cleaner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: px-fada-cleaner-watch
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: px-fada-cleaner-watch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: px-fada-cleaner-watch
+subjects:
+  - kind: ServiceAccount
+    name: px-fada-cleaner
+    namespace: px-fada-cleaner
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: px-fada-cleaner
+  namespace: px-fada-cleaner
+  labels: { app: px-fada-cleaner }
+spec:
+  selector:
+    matchLabels: { app: px-fada-cleaner }
+  template:
+    metadata:
+      labels: { app: px-fada-cleaner }
+    spec:
+      serviceAccountName: px-fada-cleaner
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      hostPID: true
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: cleaner
+          image: px-fada-cleaner.local/cleaner:v1
+          imagePullPolicy: Never
+          securityContext:
+            privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - { name: FADA_POLL_SECONDS,      value: "8" }
+            - { name: FADA_HEARTBEAT_SECONDS, value: "60" }
+            - { name: FADA_GRACE_POLLS,       value: "2" }
+            - { name: FADA_VENDOR,            value: "PURE" }
+            - { name: FADA_DRY_RUN,           value: "true" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+      terminationGracePeriodSeconds: 5

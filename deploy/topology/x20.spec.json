@@ -1,0 +1,17 @@
+{
+  "host": "10.23.26.60",
+  "token_file": "~/.x20-token",
+  "tag": "x20",
+  "purge_realms": [],
+  "purge_admins": [],
+  "purge_policies": [],
+  "remove_hosts": ["b06-28"],
+  "rename_hosts": { "b06-29": "worker1", "b06-30": "worker2" },
+  "array_hosts": {
+    "worker1": ["100000109B337073", "100000109B337074"],
+    "worker2": ["100000109B975D30", "100000109B975D31"]
+  },
+  "realms": ["realm-1", "realm-2"],
+  "pods": { "realm-1": "pxe-1", "realm-2": "pxe-2" },
+  "admins": { "realm-1": "admin-1", "realm-2": "admin-2" }
+}
