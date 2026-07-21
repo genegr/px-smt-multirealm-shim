@@ -66,8 +66,8 @@ session), `arrayident.go` (per-FQDN array identity), wired in `proxy.go`.
 | [`cmd/pxstress/`](cmd/pxstress/) | Dependency-free FADA-PVC stress harness (concurrent pools of etcd StatefulSets, data-integrity + kill/reattach durability checks). |
 | [`internal/proxy/`](internal/proxy/) | The reverse proxy and rewrite logic. |
 | [`internal/config/`](internal/config/) | Env-driven runtime config + self-signed server cert generation. |
-| [`deploy/`](deploy/) | Kubernetes manifests (`px-shim.yaml`, `px-fada-cleaner.yaml`). |
-| [`scripts/`](scripts/) | `build-and-push.sh` — tar → dev host → multi-stage Docker build → registry. |
+| [`deploy/`](deploy/) | Kubernetes manifests: the shim + cleaner, the FC multipath MachineConfig ([`pure-fc/`](deploy/pure-fc/)), and the single-array ([`x50/`](deploy/x50/)) and multi-array CSI-topology ([`topology/`](deploy/topology/)) scenarios. |
+| [`scripts/`](scripts/) | `devenv.sh` (containerized dev/build loop), `fa_provision.py` (declarative array provisioning), `fc-machineconfig.sh` (FC multipath MachineConfig generator), `build-and-push.sh` (image relay). |
 
 ## The FADA LUN-recycle data-loss bug (and the cleaner)
 
@@ -144,6 +144,36 @@ Manifests live in [`deploy/`](deploy/).
 The `fada-cleaner` uses `FADA_POLL_SECONDS`, `FADA_GRACE_POLLS`, `FADA_VENDOR` (default `PURE`),
 and `FADA_DRY_RUN`.
 
+## Fibre Channel + multi-array CSI topology
+
+Beyond the single-array iSCSI case, the shim also drives **FADA over Fibre Channel** and **multiple
+physical arrays** distinguished by **CSI topology zones** — the setup where several FlashArrays carry
+the **same realm names** and Portworx must pick the array by zone, not by name. Manifests and scripts
+for the full scenario live in [`deploy/topology/`](deploy/topology/):
+
+- **One shim per physical array** (each with `SHIM_ARRAY_IDENTITY=true`), fronting that array's realms
+  under distinct FQDNs — see [`deploy/topology/shims.yaml`](deploy/topology/shims.yaml).
+- **Declarative per-array provisioning** with [`scripts/fa_provision.py`](scripts/fa_provision.py):
+  resets an array to a realm / pod / array-host / grant / realm-token spec
+  ([`deploy/topology/*.spec.json`](deploy/topology/)).
+- **FC prerequisites** on the OpenShift workers — Pure `multipath.conf` + udev rules delivered as a
+  MachineConfig, generated from [`deploy/pure-fc/`](deploy/pure-fc/) by
+  [`scripts/fc-machineconfig.sh`](scripts/fc-machineconfig.sh).
+- **Portworx** with `PURE_FLASHARRAY_SAN_TYPE=FC` and `FACD_TOPOLOGY_ENABLED=true`. Each `pure.json`
+  entry carries a `Labels.topology.portworx.io/zone`, nodes carry the matching zone label, and FADA
+  StorageClasses use `WaitForFirstConsumer` + `allowedTopologies` so a volume provisions on the array
+  in the consuming pod's zone — a zone with no array is **hard-excluded**, not silently relocated.
+
+Topology gotchas:
+- Portworx rejects an **even** zone count (internal KVDB quorum) — use an odd number of zones; a zone
+  with no array simply hosts storageless nodes.
+- With multiple arrays the same node's FC WWNs may be pre-provisioned on several of them; keep each
+  node's array-level host **only** on the array in its zone.
+
+Build and iterate everything through [`scripts/devenv.sh`](scripts/devenv.sh) — a containerized Go
+build/test loop that needs no local toolchain (ships the tree to a jump host and runs `golang` in a
+throwaway container).
+
 ## ⚠️ Array safety
 
 The FlashArray is typically **shared** with other tenants/realms. Never delete or modify an array
@@ -152,6 +182,9 @@ matching your exact prefixes.
 
 ## Status
 
-Proven working end to end for single- and multi-realm FADA attach + I/O. A 1-hour, 3-pool
-`pxstress` run completed with **0 failures / 0 data loss** across 22 scale cycles, 24 kill+reattach
-durability checks, and 12 pool recreates.
+Proven working end to end for single- and multi-realm FADA attach + I/O, over both **iSCSI** and
+**Fibre Channel**, including a **two-array CSI-topology** deployment (same-named realms routed by
+zone). A 1-hour, 3-pool `pxstress` run (iSCSI) completed with **0 failures / 0 data loss** across 22
+scale cycles, 24 kill+reattach durability checks, and 12 pool recreates; a 1-hour, 4-pool run on the
+FC topology cluster likewise reported **0 failures / 0 data loss** (58 kill+reattach checks), and the
+`fada-cleaner` correctly flushed only stale orphan multipath maps while leaving live volumes intact.
