@@ -1,0 +1,86 @@
+# px-shim on ocp4-dev fronting the x50 FC array (sv16-x50r4-b10-13, 10.23.26.50).
+#
+# Image is sideloaded onto every worker via `podman load` (the internal registry is Removed
+# and there is no local registry), so imagePullPolicy: Never and a registry-less local tag.
+# DNS x50-a.pure.demo / x50-b.pure.demo resolve to this Service's ClusterIP (set after apply).
+#
+# Starts in PASS-THROUGH (SHIM_REWRITE=false): the shim only terminates TLS as the realm FQDNs
+# and logs every request/response verbatim, forwarding to the array unchanged — the native
+# baseline. Flip SHIM_REWRITE=true (+ restart) to turn the FC host/connection rewrites on.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: px-shim
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: px-shim
+  namespace: px-shim
+  labels: { app: px-shim }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: px-shim }
+  template:
+    metadata:
+      labels: { app: px-shim }
+    spec:
+      containers:
+        - name: px-shim
+          image: px-shim.local/shim:baseline
+          imagePullPolicy: Never
+          ports:
+            - { name: https, containerPort: 9443 }
+          env:
+            - { name: SHIM_LISTEN_ADDR, value: ":9443" }
+            - { name: SHIM_UPSTREAM_URL, value: "https://10.23.26.50" }
+            - { name: SHIM_UPSTREAM_INSECURE, value: "true" }
+            - { name: SHIM_CERT_SANS, value: "x50-a.pure.demo,x50-b.pure.demo" }
+            - { name: SHIM_LOG_BODIES, value: "true" }
+            - { name: SHIM_MAX_LOG_BODY, value: "65536" }
+            - { name: SHIM_REWRITE, value: "false" }
+            - { name: SHIM_ARRAY_IDENTITY, value: "false" }
+            - { name: SHIM_CONFIG_FILE, value: "/etc/px-shim/config.json" }
+            - name: SHIM_ARRAY_TOKEN
+              valueFrom:
+                secretKeyRef: { name: px-shim-config, key: array-token }
+          volumeMounts:
+            - { name: config, mountPath: /etc/px-shim, readOnly: true }
+          readinessProbe:
+            tcpSocket: { port: 9443 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9443 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: config
+          secret:
+            secretName: px-shim-config
+            items:
+              - { key: config.json, path: config.json }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: px-shim
+  namespace: px-shim
+  labels: { app: px-shim }
+spec:
+  type: ClusterIP
+  selector: { app: px-shim }
+  ports:
+    - { name: https, port: 443, targetPort: 9443 }

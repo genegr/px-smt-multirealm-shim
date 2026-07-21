@@ -1,0 +1,60 @@
+# Multi-realm FADA-on-FC test: a FlashArray Direct Access PVC whose volume lives in realm-b
+# (pod pxe-b), attached to an OCP worker whose FC WWNs belong to the array-level host. Exercises
+# the shim's host/connection/grant + per-FQDN array-identity rewrites for realm-b over Fibre Channel.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fada-test
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: px-fada-realm-b
+provisioner: pxd.portworx.com
+parameters:
+  backend: "pure_block"
+  pure_fa_pod_name: "pxe-b"     # realm comes from the x50-b/realm-b pure.json entry; pod required
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fada-b-pvc
+  namespace: fada-test
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: px-fada-realm-b
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fada-b-pod
+  namespace: fada-test
+spec:
+  containers:
+    - name: app
+      image: registry.access.redhat.com/ubi9/ubi-minimal
+      command: ["/bin/sh","-c"]
+      args:
+        - |
+          set -e
+          echo "hello-realm-b-$(date +%s)" > /data/marker
+          dd if=/dev/zero of=/data/testfile bs=1M count=100 conv=fsync
+          sync
+          echo "WROTE_100M marker=$(cat /data/marker)"
+          df -h /data
+          sleep 3600
+      volumeMounts:
+        - { name: data, mountPath: /data }
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: fada-b-pvc

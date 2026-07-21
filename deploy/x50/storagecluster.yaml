@@ -1,0 +1,36 @@
+# Portworx StorageCluster on ocp4-dev, backed by x50 FlashArray over Fibre Channel, via the shim.
+#
+# pure.json (px-pure-secret) points MgmtEndPoint at x50-a.demo.pure -> shim ClusterIP -> array,
+# Realm=realm-a. Bring-up is single-realm (realm-a); realm-b is added afterwards for the FADA test.
+# StoreV2 cloud drives live in pod realm-a::pxe-a. PURE_FLASHARRAY_SAN_TYPE=FC selects Fibre Channel.
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-x50
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  cloudStorage:
+    deviceSpecs:
+      - "size=150,pod=pxe-a"
+    systemMetadataDeviceSpec: "size=64,pod=pxe-a"
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+  monitoring:
+    telemetry:
+      enabled: false
+  env:
+    - name: PURE_FLASHARRAY_SAN_TYPE
+      value: "FC"
+  deleteStrategy:
+    type: UninstallAndDelete

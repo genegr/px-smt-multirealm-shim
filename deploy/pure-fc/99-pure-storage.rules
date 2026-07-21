@@ -1,0 +1,18 @@
+# Pure Storage FlashArray recommended queue/timeout settings (udev).
+# Applied to worker nodes via the 99-worker-pure-fc-multipath MachineConfig at
+# /etc/udev/rules.d/99-pure-storage.rules.
+
+# --- SCSI / Fibre Channel devices (the active transport on these nodes) ---
+# Use the 'none' scheduler for low-latency solid-state storage.
+ACTION=="add|change", KERNEL=="sd*[!0-9]", SUBSYSTEM=="block", ENV{ID_VENDOR}=="PURE", ATTR{queue/scheduler}="none"
+# Do not contribute to the kernel entropy pool (reduces CPU overhead).
+ACTION=="add|change", KERNEL=="sd*[!0-9]", SUBSYSTEM=="block", ENV{ID_VENDOR}=="PURE", ATTR{queue/add_random}="0"
+# Redirect I/O completions to the originating CPU to spread load.
+ACTION=="add|change", KERNEL=="sd*[!0-9]", SUBSYSTEM=="block", ENV{ID_VENDOR}=="PURE", ATTR{queue/rq_affinity}="2"
+# Set the SCSI device (HBA) timeout to 60 seconds.
+ACTION=="add|change", KERNEL=="sd*[!0-9]", SUBSYSTEM=="block", ENV{ID_VENDOR}=="PURE", ATTR{device/timeout}="60"
+
+# --- NVMe-oF devices (kept for completeness; inactive on FC-only nodes) ---
+ACTION=="add|change", KERNEL=="nvme*[0-9]n*[0-9]", SUBSYSTEM=="block", ATTRS{model}=="Pure Storage FlashArray*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="nvme*[0-9]n*[0-9]", SUBSYSTEM=="block", ATTRS{model}=="Pure Storage FlashArray*", ATTR{queue/nr_requests}="1023"
+ACTION=="add|change", KERNEL=="nvme*[0-9]n*[0-9]", SUBSYSTEM=="block", ATTRS{model}=="Pure Storage FlashArray*", ATTR{queue/io_poll}="0"
