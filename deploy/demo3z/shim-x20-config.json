@@ -1,0 +1,6 @@
+{
+  "hosts": [
+    { "node": "worker1", "arrayHost": "worker1", "wwns": "100000109B337073,100000109B337074" },
+    { "node": "worker2", "arrayHost": "worker2", "wwns": "100000109B975D30,100000109B975D31" }
+  ]
+}

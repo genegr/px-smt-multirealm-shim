@@ -1,0 +1,35 @@
+# 3-zone-via-shim PX: three "arrays" (fa-a/x50, fa-b + fa-c/x20) in three zones, so the operator
+# accepts the topology (odd zone count). Cloud drives use pod "pxe" (same name in realm-1/2/3, as
+# SMT+topology requires). FC via the shims. KVDB lands one member per zone (worker0/1/2).
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-3z
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  cloudStorage:
+    deviceSpecs:
+      - "size=150,pod=pxe"
+    systemMetadataDeviceSpec: "size=64,pod=pxe"
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+    topology:
+      enabled: true
+  env:
+    - name: PURE_FLASHARRAY_SAN_TYPE
+      value: "FC"
+    - name: FACD_TOPOLOGY_ENABLED
+      value: "true"
+  deleteStrategy:
+    type: UninstallAndDelete

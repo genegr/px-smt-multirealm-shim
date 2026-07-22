@@ -1,0 +1,12 @@
+{
+  "host": "10.23.26.50",
+  "token_file": "~/.x50-token",
+  "tag": "x50",
+  "clean_leftovers": ["realm-1", "realm-2", "realm-3"],
+  "array_hosts": {
+    "worker0": ["100000109B337076", "100000109B337077"]
+  },
+  "realms": ["realm-1"],
+  "pods": { "realm-1": "pxe" },
+  "admins": { "realm-1": "admin-1" }
+}
