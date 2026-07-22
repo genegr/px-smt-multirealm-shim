@@ -1,0 +1,61 @@
+# Small example app on the nested "mini" cluster using a PVC from the px-csi-db StorageClass
+# (pxd.portworx.com, repl=3, io_profile=db_remote). The app appends a line to a log on the PV on
+# every start, so restarts demonstrate that the Portworx-backed volume persists (boot count grows).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mini-app
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  namespace: mini-app
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: px-csi-db
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-px
+  namespace: mini-app
+  labels: { app: hello-px }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hello-px }
+  strategy:
+    type: Recreate            # RWO volume: don't run two pods at once
+  template:
+    metadata:
+      labels: { app: hello-px }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: registry.access.redhat.com/ubi9/ubi-minimal
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "started $(date -u +%FT%TZ) on ${HOSTNAME}" >> /data/boot.log
+              echo "=== px-csi-db PVC contents (boot #$(wc -l < /data/boot.log)) ==="
+              cat /data/boot.log
+              exec sleep infinity
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: app-data
