@@ -33,7 +33,10 @@ spec:
         memory: { guest: 20Gi }
         devices:
           disks:
-            - { name: root, bootOrder: 1, disk: { bus: virtio } }
+            - { name: root, bootOrder: 1, disk: { bus: virtio } }   # -> /dev/vda (OS)
+            - { name: kvdb, disk: { bus: virtio } }                  # -> /dev/vdb (PX kvdb 32Gi)
+            - { name: meta, disk: { bus: virtio } }                  # -> /dev/vdc (PX-StoreV2 metadata 64Gi)
+            - { name: data, disk: { bus: virtio } }                  # -> /dev/vdd (PX-StoreV2 data 150Gi)
             - { name: iso, bootOrder: 2, cdrom: { bus: sata } }
           interfaces:
             - name: br
@@ -45,6 +48,9 @@ spec:
           multus: { networkName: br-vm }
       volumes:
         - { name: root, dataVolume: { name: mini-0-root } }
+        - { name: kvdb, dataVolume: { name: mini-0-kvdb } }
+        - { name: meta, dataVolume: { name: mini-0-meta } }
+        - { name: data, dataVolume: { name: mini-0-data } }
         - { name: iso, dataVolume: { name: mini-0-iso } }
 ---
 apiVersion: kubevirt.io/v1
@@ -76,7 +82,10 @@ spec:
         memory: { guest: 20Gi }
         devices:
           disks:
-            - { name: root, bootOrder: 1, disk: { bus: virtio } }
+            - { name: root, bootOrder: 1, disk: { bus: virtio } }   # -> /dev/vda (OS)
+            - { name: kvdb, disk: { bus: virtio } }                  # -> /dev/vdb (PX kvdb 32Gi)
+            - { name: meta, disk: { bus: virtio } }                  # -> /dev/vdc (PX-StoreV2 metadata 64Gi)
+            - { name: data, disk: { bus: virtio } }                  # -> /dev/vdd (PX-StoreV2 data 150Gi)
             - { name: iso, bootOrder: 2, cdrom: { bus: sata } }
           interfaces:
             - name: br
@@ -88,6 +97,9 @@ spec:
           multus: { networkName: br-vm }
       volumes:
         - { name: root, dataVolume: { name: mini-1-root } }
+        - { name: kvdb, dataVolume: { name: mini-1-kvdb } }
+        - { name: meta, dataVolume: { name: mini-1-meta } }
+        - { name: data, dataVolume: { name: mini-1-data } }
         - { name: iso, dataVolume: { name: mini-1-iso } }
 ---
 apiVersion: kubevirt.io/v1
@@ -119,7 +131,10 @@ spec:
         memory: { guest: 20Gi }
         devices:
           disks:
-            - { name: root, bootOrder: 1, disk: { bus: virtio } }
+            - { name: root, bootOrder: 1, disk: { bus: virtio } }   # -> /dev/vda (OS)
+            - { name: kvdb, disk: { bus: virtio } }                  # -> /dev/vdb (PX kvdb 32Gi)
+            - { name: meta, disk: { bus: virtio } }                  # -> /dev/vdc (PX-StoreV2 metadata 64Gi)
+            - { name: data, disk: { bus: virtio } }                  # -> /dev/vdd (PX-StoreV2 data 150Gi)
             - { name: iso, bootOrder: 2, cdrom: { bus: sata } }
           interfaces:
             - name: br
@@ -131,4 +146,7 @@ spec:
           multus: { networkName: br-vm }
       volumes:
         - { name: root, dataVolume: { name: mini-2-root } }
+        - { name: kvdb, dataVolume: { name: mini-2-kvdb } }
+        - { name: meta, dataVolume: { name: mini-2-meta } }
+        - { name: data, dataVolume: { name: mini-2-data } }
         - { name: iso, dataVolume: { name: mini-2-iso } }

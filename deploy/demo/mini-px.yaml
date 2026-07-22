@@ -1,0 +1,51 @@
+# Nested Portworx Enterprise (PX-StoreV2) inside the "mini" cluster, on local VM disks (NO
+# FlashArray, no shim). Each node contributes /dev/vdb (kvdb 32Gi), /dev/vdc (StoreV2 metadata
+# 64Gi), /dev/vdd (StoreV2 data 150Gi) — the disks added in mini-px-disks.yaml + mini-vms.yaml.
+#
+# Apply order: operator Subscription first (wait for its CSV), then the StorageCluster.
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: portworx }
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: portworx-certified
+  namespace: openshift-operators
+spec:
+  channel: stable
+  name: portworx-certified
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+---
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-mini
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  storage:
+    kvdbDevice: /dev/vdb
+    systemMetadataDevice: /dev/vdc
+    devices:
+      - /dev/vdd
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+  monitoring:
+    telemetry:
+      enabled: false
+  deleteStrategy:
+    type: UninstallAndDelete

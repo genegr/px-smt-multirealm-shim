@@ -1,0 +1,67 @@
+# Extra per-node disks for a nested Portworx (PX-StoreV2) install inside the "mini" cluster.
+# Three blank PX-replicated block volumes per VM (backed by the host px-3z), attached to the VMs
+# as virtio disks (see mini-vms.yaml): kvdb=/dev/vdb (32Gi), metadata=/dev/vdc (64Gi),
+# data=/dev/vdd (150Gi). Consumed by deploy/demo/mini-px.yaml (the nested StorageCluster).
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-0-kvdb, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 32Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-0-meta, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 64Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-0-data, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 150Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-1-kvdb, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 32Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-1-meta, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 64Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-1-data, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 150Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-2-kvdb, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 32Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-2-meta, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 64Gi } } }
+  source: { blank: {} }
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: { name: mini-2-data, namespace: mini }
+spec:
+  storage: { storageClassName: px-csi-replicated, accessModes: [ReadWriteOnce], volumeMode: Block, resources: { requests: { storage: 150Gi } } }
+  source: { blank: {} }
