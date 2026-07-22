@@ -92,6 +92,20 @@ def main():
     tag = spec["tag"]
     print(f"== {tag} ({spec['host']}) ==")
 
+    # ---- CLEAN LEFTOVERS ----
+    # Delete Portworx-created volumes + realm-scoped hosts under these realms WITHOUT touching the
+    # realm/pod/array-host/token structure. Used on teardown to return to a redeployable baseline
+    # (the realms themselves are SafeMode-ratcheted and cannot be eradicated anyway).
+    for r in spec.get("clean_leftovers", []):
+        _, dv = fa.call("GET", "/volumes")
+        for v in dv.get("items", []):
+            if v["name"].startswith(r + "::"):
+                purge_volume(fa, v["name"])
+        for h in fa.names("hosts"):
+            if h and "::" in h and h.startswith(r + "::"):
+                fa.call("DELETE", f"/hosts?names={q(h)}")
+                print(f"    realm-host {h}: deleted")
+
     # ---- PURGE ----
     purge_realms = spec.get("purge_realms", [])
     if purge_realms:
@@ -161,7 +175,13 @@ def main():
             print(f"  grants into {r}: {list(spec.get('array_hosts', {}))}")
 
     # ---- ADMINS + POLICIES + TOKENS ----
+    # Idempotent: if the realm-scoped token file already exists (a prior provision), reuse it —
+    # re-issuing would rotate the token and break the deployed pure.json.
     for r, adm in spec.get("admins", {}).items():
+        out = os.path.expanduser(f"~/.{tag}-{r}-token")
+        if os.path.exists(out) and os.path.getsize(out) > 0:
+            print(f"  token {adm} ({r}) already present at {out} -> reusing")
+            continue
         pol = f"{r}-pol"
         fa.call("POST", f"/policies/management-access?names={q(pol)}", {
             "enabled": True, "aggregation_strategy": "all-permissions",
@@ -174,7 +194,6 @@ def main():
         items = d.get("items", [])
         tok = (items[0].get("api_token", {}) if items else {}).get("token")
         if tok:
-            out = os.path.expanduser(f"~/.{tag}-{r}-token")
             fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             os.write(fd, tok.encode())
             os.close(fd)
