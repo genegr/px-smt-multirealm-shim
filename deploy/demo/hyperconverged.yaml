@@ -1,0 +1,8 @@
+# Deploys the actual virtualization stack (KubeVirt, CDI, ...) once the HCO operator CSV has
+# Succeeded. Apply after deploy/demo/openshift-virtualization.yaml.
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec: {}

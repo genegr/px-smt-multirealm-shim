@@ -1,0 +1,32 @@
+# Scenario B fallback: PX refused the 2-zone topology ("exactly 2 zones ... quorum loss"), so this
+# variant drops CSI topology entirely. Single realm-1 on BOTH arrays, no zone labels, no shim.
+# PX runs single-domain (KVDB across all 3 storage nodes) and uses both FlashArrays as backends.
+# (Node zone labels must also be removed: oc label node <n> topology.portworx.io/zone- .)
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-demo
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  cloudStorage:
+    deviceSpecs:
+      - "size=150,pod=pxe-1"
+    systemMetadataDeviceSpec: "size=64,pod=pxe-1"
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+  env:
+    - name: PURE_FLASHARRAY_SAN_TYPE
+      value: "FC"
+  deleteStrategy:
+    type: UninstallAndDelete

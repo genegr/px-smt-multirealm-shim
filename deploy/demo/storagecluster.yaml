@@ -1,0 +1,40 @@
+# Scenario B (demo) StorageCluster: NO shim. PX talks directly to both FlashArrays (pure.json
+# MgmtEndPoint = array IPs), a single shared realm name (realm-1) on each array, distinguished by
+# CSI topology zone. Array-level hosts are removed first so PX creates its own realm hosts and
+# claims the node WWNs natively (the whole reason no shim is needed here).
+#
+# Node zones for the 2+1 KVDB test: worker0+worker1 -> zone-a (x50), worker2 -> zone-b (x20).
+# NOTE: the operator may reject a 2-zone cluster ("exactly 2 zones ... quorum loss"); if so, strip
+# the zone labels + FACD_TOPOLOGY_ENABLED and redeploy single-domain (see demo runbook).
+apiVersion: core.libopenstorage.org/v1
+kind: StorageCluster
+metadata:
+  name: px-demo
+  namespace: portworx
+  annotations:
+    portworx.io/is-openshift: "true"
+spec:
+  image: portworx/oci-monitor:3.6.1.1
+  imagePullPolicy: Always
+  kvdb:
+    internal: true
+  cloudStorage:
+    deviceSpecs:
+      - "size=150,pod=pxe-1"
+    systemMetadataDeviceSpec: "size=64,pod=pxe-1"
+  secretsProvider: k8s
+  stork:
+    enabled: true
+  autopilot:
+    enabled: true
+  csi:
+    enabled: true
+    topology:
+      enabled: true
+  env:
+    - name: PURE_FLASHARRAY_SAN_TYPE
+      value: "FC"
+    - name: FACD_TOPOLOGY_ENABLED
+      value: "true"
+  deleteStrategy:
+    type: UninstallAndDelete

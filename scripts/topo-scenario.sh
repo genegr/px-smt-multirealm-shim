@@ -117,7 +117,7 @@ down_arrays(){ say "cleaning array leftovers (keep realms/pods/hosts/tokens)"
   for spec in "x50:10.23.26.50:.x50-token" "x20:10.23.26.60:.x20-token"; do
     local tag=${spec%%:*} rest=${spec#*:} host tf; host=${rest%%:*}; tf=${rest##*:}
     cat > /tmp/clean-$tag.json <<EOF
-{"host":"$host","token_file":"~/.$tf","tag":"$tag","clean_leftovers":["realm-1","realm-2"]}
+{"host":"$host","token_file":"~/$tf","tag":"$tag","clean_leftovers":["realm-1","realm-2"]}
 EOF
     python3 "$REPO/scripts/fa_provision.py" /tmp/clean-$tag.json; rm -f /tmp/clean-$tag.json
   done; }
